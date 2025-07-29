@@ -1,69 +1,124 @@
 # core/factor_generator.py
-import subprocess
+"""
+因子生成器 - DolphinDB脚本执行器
+
+简洁的接口，专注于DolphinDB脚本执行和因子数据生成
+"""
+
 import os
 import tempfile
-import dolphindb as ddb
+from datetime import datetime
+from typing import Dict, Any, Optional
 import pandas as pd
+import logging
+
+try:
+    import dolphindb as ddb
+    DDB_AVAILABLE = True
+except ImportError:
+    DDB_AVAILABLE = False
+
+try:
+    from ..config.config import DolphinDBConfig
+except ImportError:
+    from factor_backtest_framework.config.config import DolphinDBConfig
 
 class FactorGenerator:
-    def __init__(self, script_path: str, output_path: str, params: dict):
-        self.script_path = script_path
-        self.output_path = output_path
-        self.params = params
-
-    def generate_factor(self):
-        # 读取 DolphinDB 脚本
-        with open(self.script_path, 'r', encoding='utf-8') as f:
-            script = f.read()
-
+    """因子生成器"""
+    
+    def __init__(self, ddb_config: Optional[DolphinDBConfig] = None):
+        """
+        初始化因子生成器
+        
+        Args:
+            ddb_config: DolphinDB连接配置
+        """
+        if not DDB_AVAILABLE:
+            raise ImportError("DolphinDB库未安装: pip install dolphindb")
+        
+        self.ddb_config = ddb_config or DolphinDBConfig()
+        self.session = None
+        self.logger = logging.getLogger(__name__)
+    
+    def connect(self) -> ddb.session:
+        """建立DolphinDB连接"""
+        if self.session is None:
+            self.session = ddb.session()
+            self.session.connect(
+                host=self.ddb_config.host,
+                port=self.ddb_config.port,
+                userid=self.ddb_config.username,
+                password=self.ddb_config.password
+            )
+            # 测试连接
+            self.session.run("1+1")
+            self.logger.info(f"已连接到DolphinDB: {self.ddb_config.host}:{self.ddb_config.port}")
+        
+        return self.session
+    
+    def disconnect(self):
+        """断开连接"""
+        if self.session:
+            self.session.close()
+            self.session = None
+            self.logger.info("已断开DolphinDB连接")
+    
+    def generate(self, 
+                script_path: str, 
+                params: Dict[str, Any],
+                output_path: Optional[str] = None) -> pd.DataFrame:
+        """
+        执行DolphinDB脚本生成因子
+        
+        Args:
+            script_path: 脚本文件路径
+            params: 脚本参数
+            output_path: 输出文件路径（可选）
+            
+        Returns:
+            因子DataFrame
+        """
+        # 读取脚本
+        with open(script_path, 'r', encoding='utf-8') as f:
+            script_content = f.read()
+        
         # 替换参数
-        for key, value in self.params.items():
-            script = script.replace(f'{{{key}}}', str(value))
-
-        # 创建临时脚本文件
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.dos', delete=False, encoding='utf-8') as tmp_file:
-            tmp_file.write(script)
-            tmp_script_path = tmp_file.name
-
+        for key, value in params.items():
+            placeholder = f'{{{key}}}'
+            script_content = script_content.replace(placeholder, str(value))
+        
+        # 执行脚本
+        session = self.connect()
         try:
-            # 连接DolphinDB服务器
-            s = ddb.session()
-            try:
-                s.connect(
-                    "10.80.87.122", 
-                    8848, 
-                    "quant_read", 
-                    "quant_123456"
-                )
-            except Exception as e:
-                print("连接DolphinDB服务器时发生错误：", e)
-                raise
-
-            # 读取脚本内容
-            with open(tmp_script_path, 'r', encoding='utf-8') as f:
-                script_content = f.read()
-
-            # 执行脚本
-            try:
-                result = s.run(script_content)
-            except Exception as e:
-                print(f"在DolphinDB服务器上执行脚本时出错: {e}")
-                raise
-
-            # 保存输出结果（假设返回DataFrame或可转为csv）
-            os.makedirs(os.path.dirname(self.output_path), exist_ok=True)
-            if isinstance(result, pd.DataFrame):
-                result.to_csv(self.output_path, index=False)
-            else: 
-                # 若不是DataFrame，直接保存为文本
-                with open(self.output_path, 'w', encoding='utf-8') as f:
-                    f.write(str(result)) 
-
-            print(f"因子生成完成，结果保存至: {self.output_path}")
+            self.logger.info("开始执行DolphinDB脚本...")
+            result = session.run(script_content)
+            
+            # 转换为DataFrame
+            if hasattr(result, 'toDF'):
+                df = result.toDF()
+            elif isinstance(result, pd.DataFrame):
+                df = result
+            else:
+                df = pd.DataFrame(result)
+            
+            self.logger.info(f"因子生成完成，数据形状: {df.shape}")
+            
+            # 保存文件
+            if output_path:
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                df.to_csv(output_path, index=False)
+                self.logger.info(f"因子数据已保存: {output_path}")
+            
+            return df
+            
         except Exception as e:
-            print(f"执行 DolphinDB 脚本时出错: {e}")
+            self.logger.error(f"因子生成失败: {str(e)}")
             raise
         finally:
-            # 清理临时文件
-            if os.path.exists(tmp_script_path):
-                os.remove(tmp_script_path)
+            self.disconnect()
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.disconnect()
