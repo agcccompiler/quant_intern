@@ -1,0 +1,117 @@
+/*
+参数：
+    start_date: 开始日期
+    end_date: 结束日期
+    time_ranges: 交易时间段列表 (JSON格式字符串)
+    seconds: 时间桶大小
+    job_id: 作业ID
+    factor_name: 因子名称
+    portion: 强信号占比
+    database: 数据库名
+    table_name: 表名
+*/
+
+def calc_fft_ratio(volumes) {
+    // 1. 去掉首尾数据点（根据需求决定是否保留此操作）
+    real_volume = volumes[2:size(volumes)-1]  
+    n = size(real_volume)
+    // 2. 处理空数据情况
+    if (n == 0) { return 0.0 }
+    // 3. 执行FFT（使用全部数据）
+    fft_result = signal::fft(real_volume)
+    amplitude = signal::abs(fft_result)  // 计算振幅
+    // 4. 计算有效频谱长度（对称性，只需取前半部分）
+    n_valid = n / 2 + 1  // 实数FFT的共轭对称性
+    valid_amp = amplitude[0:n_valid]
+    // 5. 计算前portion%强信号
+    top_len = max(1, floor(n_valid * {portion}))
+    total_amp = sum(valid_amp)
+    if (total_amp == 0) { return 0.0 }
+    // 6. 降序排序取强信号
+    sorted_amp = valid_amp.sort(false)  // false表示降序
+    top_sum = sum(sorted_amp[0:top_len])
+    return top_sum / total_amp
+}
+
+// 解析时间段JSON字符串的辅助函数
+def parse_time_ranges(time_ranges_json) {
+    // 时间段格式："[['09:30:00.000','11:30:00.000'],['13:00:00.000','14:57:00.000']]"
+    // 这里简化处理，实际中会传入解析好的时间段
+    return time_ranges_json  // 假设已经是解析好的时间段
+}
+
+// 创建时间过滤条件
+def create_time_filter(datetime_col, time_ranges) {
+    // time_ranges 格式: [['09:30:00.000','11:30:00.000'],['13:00:00.000','14:57:00.000']]
+    // 由于DolphinDB中字符串处理的限制，这里采用预设时间段方式
+    
+    // 根据time_ranges参数值判断使用哪个时间段
+    if (time_ranges == "morning") {
+        return time(datetime_col) between 09:30:00.000 : 11:30:00.000
+    } else if (time_ranges == "afternoon") {
+        return time(datetime_col) between 13:00:00.000 : 14:57:00.000
+    } else if (time_ranges == "opening") {
+        return time(datetime_col) between 09:30:00.000 : 10:00:00.000
+    } else if (time_ranges == "closing") {
+        return time(datetime_col) between 14:30:00.000 : 14:57:00.000
+    } else if (time_ranges == "high_liquidity") {
+        return (time(datetime_col) between 09:30:00.000 : 10:30:00.000) or 
+               (time(datetime_col) between 13:00:00.000 : 13:30:00.000) or 
+               (time(datetime_col) between 14:30:00.000 : 14:57:00.000)
+    } else if (time_ranges == "avoid_lunch") {
+        return (time(datetime_col) between 09:30:00.000 : 11:25:00.000) or 
+               (time(datetime_col) between 13:05:00.000 : 14:57:00.000)
+    } else if (time_ranges == "core_hours") {
+        return time(datetime_col) between 10:00:00.000 : 14:30:00.000
+    } else {
+        // 默认全天
+        return time(datetime_col) between 09:30:00.000 : 14:57:00.000
+    }
+}
+
+// 因子计算主函数 - 支持灵活的时间段和聚合窗口
+def factor_crowd_fftv10_flexible(NumTrades, date_time, code, time_ranges, agg_seconds) {
+    stock_code = code[0]
+    trade_date = date(date_time[0])
+    
+    // 创建指定秒数的时间桶
+    ts_agg = temporalAdd(date_time, agg_seconds, "s")
+    
+    // 按指定秒数聚合交易笔数
+    aggData = select 
+                sum(NumTrades) as NumTradesAgg 
+                from table(NumTrades as NumTrades, ts_agg as ts_agg) 
+                group by ts_agg 
+                order by ts_agg
+    
+    // 计算FFT特征值
+    if (size(aggData.NumTradesAgg) < 3) {
+        return 0.0  // 数据点太少，返回0
+    }
+    
+    fft_ratio = calc_fft_ratio(aggData.NumTradesAgg)
+    
+    return fft_ratio
+}
+
+// 主任务函数
+def factor_job(){
+    tab = loadTable('dfs://{database}', "{table_name}")
+
+    // 应用时间过滤条件
+    time_filter = create_time_filter(tab.date_time, "{time_ranges}")
+    
+    corrPM_day = select factor_crowd_fftv10_flexible(NumTrades, date_time, code, "{time_ranges}", {seconds}) as factor 
+                 from tab 
+                 where date(date_time) between {start_date} : {end_date} 
+                 and time_filter
+                 group by code, date(date_time) as day_date
+                 order by day_date, code
+    
+    return corrPM_day
+}
+
+// 提交作业并获取结果
+job1_ID = submitJobEx("{job_id}", "{factor_name}", 4, 128, factor_job);
+result = getJobReturn(job1_ID, true);
+result
