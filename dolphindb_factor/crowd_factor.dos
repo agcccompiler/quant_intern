@@ -1,0 +1,55 @@
+/*
+参数如下:
+job_id: 作业id
+start_date: 开始日期
+end_date: 结束日期
+start_time: 开始时间
+end_time: 结束时间
+portion: FFT强信号占比
+bucket_seconds: 时间桶大小（秒）
+*/
+
+
+def cal_fft(volumes) {
+    n = 50
+    real_volume = volumes[2 : size(volumes) - 1]
+    if (size(real_volume) < n) {
+        real_volume = concat(real_volume, array(0, n - size(real_volume)))
+    }
+    real_volume = real_volume[0 : n]
+    fft_result = signal::fft(real_volume)
+    amplitude = signal::abs(fft_result)
+    top_10_len = max(1, floor(size(amplitude) * {portion}))
+    top_10_amplitude = amplitude[0 : top_10_len]
+    return sum(top_10_amplitude) / sum(amplitude) 
+}
+
+def factor_crowd_fftv10(NumTrades, date_time, code) {
+    stock_code = code[0]
+    trade_date = date(date_time[0])
+    ts_30s = temporalAdd(date_time, {bucket_seconds}, "s")
+    aggData = select
+        sum(NumTrades) as NumTrades30s
+    from table(NumTrades as NumTrades, ts_30s as ts_30s)
+    group by ts_30s
+    order by ts_30s
+    fft_value = cal_fft(aggData.NumTrades30s)
+    return fft_value
+}
+
+def factor_job() {
+    tab = loadTable('dfs://tonglian_level2', "snapshot")
+    corrPM_day = select
+        factor_crowd_fftv10(NumTrades, date_time, code) as factor
+    from tab
+    where date(date_time) between {start_date} : {end_date}
+      and time(date_time) between {start_time} : {end_time}
+    group by code, date(date_time) as day_date
+    order by day_date, code
+    
+    // 将长格式转换为宽格式：日期为行，股票为列
+    pivot_result = select factor from corrPM_day pivot by day_date, code
+    return pivot_result
+}
+
+job_ID = submitJobEx("{job_id}", "factor test", 4, 64, factor_job);
