@@ -1,1 +1,50 @@
-read_csv.py
+# 忽略 Jupyter Notebook 检查点
+.ipynb_checkpoints/
+
+# 忽略 Python 缓存文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 忽略虚拟环境目录
+venv/
+env/
+ENV/
+.venv/
+.ENV/
+
+# 忽略数据文件和输出
+data/
+output/
+results/
+*.csv
+*.csv.xz
+*.xlsx
+*.h5
+*.feather
+*.parquet
+
+# 忽略日志文件
+*.log
+
+# 忽略本地配置文件
+*.env
+*.local
+.DS_Store
+
+# 忽略 VSCode 配置
+.vscode/
+
+# 忽略 PyCharm 配置
+.idea/
+
+# 忽略测试覆盖率报告
+htmlcov/
+.coverage
+coverage.xml
+
+# 忽略临时文件
+*.tmp
+*.bak
+*.swp

@@ -7,21 +7,24 @@ start_time: 开始时间
 end_time: 结束时间
 portion: FFT强信号占比
 bucket_seconds: 时间桶大小（秒）
+number_of_data: 数据长度
 */
 
 
 def cal_fft(volumes) {
-    n = 50
-    real_volume = volumes[2 : size(volumes) - 1]
-    if (size(real_volume) < n) {
-        real_volume = concat(real_volume, array(0, n - size(real_volume)))
+    n = {number_of_data} // 512
+    real_volumn = volumes[2 : size(volumes) - 1]
+    if (size(real_volumn) < n) {
+        real_volumn = concat(real_volumn, array(0, n - size(real_volumn)))
     }
-    real_volume = real_volume[0 : n]
-    fft_result = signal::fft(real_volume)
+    real_volumn = real_volumn[0 : n]
+    fft_result = signal::fft(real_volumn)
     amplitude = signal::abs(fft_result)
-    top_10_len = max(1, floor(size(amplitude) * {portion}))
-    top_10_amplitude = amplitude[0 : top_10_len]
-    return sum(top_10_amplitude) / sum(amplitude) 
+    amplitude = amplitude[1:]
+    sorted_amplitude = sort(amplitude, false)  // 降序排序
+    top_len = max(1, floor(size(amplitude) * {portion}))
+    top_amplitude = sorted_amplitude[0 : top_len]
+    return sum(top_amplitude) / sum(amplitude)
 }
 
 def factor_crowd_fftv10(NumTrades, date_time, code) {
